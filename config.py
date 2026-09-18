@@ -46,6 +46,11 @@ FIREFOX_BIN = _first_existing(
 )
 
 OUTPUT_ROOT = Path("data")
+# Phân loại kết quả cào:
+#   du/    : gói có ĐỦ cả 2 file (Thông báo mời thầu + Hồ sơ mời thầu)
+#   thieu/ : gói THIẾU ít nhất 1 file
+OUTPUT_FULL = OUTPUT_ROOT / "du"
+OUTPUT_PARTIAL = OUTPUT_ROOT / "thieu"
 # Thư mục tải file. Mỗi worker dùng thư mục RIÊNG để không nhặt nhầm file của nhau.
 # Ghi đè qua biến môi trường WORKER_DOWNLOAD_DIR (do run_workers.sh đặt).
 DOWNLOAD_DIR = Path(

@@ -75,7 +75,9 @@ def process_one(driver, row) -> tuple[bool, bool, str]:
         # có thể trang render chậm hoặc bố cục khác
         dismiss_alert(driver)
 
-    folder = C.OUTPUT_ROOT / sanitize_folder_name(title)
+    safe_name = sanitize_folder_name(title)
+    # Tải vào thư mục tạm trước, phân loại đủ/thiếu sau khi biết kết quả
+    folder = C.OUTPUT_ROOT / "_tmp" / safe_name
     folder.mkdir(parents=True, exist_ok=True)
     logger.info(f"  -> {title[:70]}")
 
@@ -97,7 +99,28 @@ def process_one(driver, row) -> tuple[bool, bool, str]:
     if not hsmt_ok:
         logger.warning("    HSMT: không có/không tải được biểu mẫu webform")
 
-    return tbmt_ok, hsmt_ok, str(folder)
+    # Phân loại: ĐỦ (cả 2 file) -> data/du/ ; THIẾU -> data/thieu/
+    final_folder = _finalize_folder(folder, safe_name, tbmt_ok, hsmt_ok)
+    return tbmt_ok, hsmt_ok, str(final_folder)
+
+
+def _finalize_folder(tmp_folder, safe_name: str, tbmt_ok: bool, hsmt_ok: bool):
+    """Di chuyển thư mục gói từ _tmp sang du/ (đủ 2 file) hoặc thieu/ (thiếu)."""
+    import shutil
+
+    is_full = tbmt_ok and hsmt_ok
+    dest_root = C.OUTPUT_FULL if is_full else C.OUTPUT_PARTIAL
+    dest = dest_root / safe_name
+    try:
+        dest_root.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            shutil.rmtree(dest, ignore_errors=True)
+        shutil.move(str(tmp_folder), str(dest))
+        logger.info(f"    Phân loại -> {'du' if is_full else 'thieu'}/{safe_name[:50]}")
+        return dest
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"    Không di chuyển được thư mục phân loại: {str(e)[:60]}")
+        return tmp_folder
 
 
 def _make_driver_resilient(headless: bool, worker_id: str, max_tries: int = 5):
@@ -200,6 +223,10 @@ def run_download(
     # Dọn thư mục download riêng của worker (tránh file rác từ lần trước)
     cleanup_download_dir()
     logger.info(f"[{worker_id}] Thư mục download: {C.DOWNLOAD_DIR}")
+
+    # Tạo sẵn thư mục phân loại đủ/thiếu
+    C.OUTPUT_FULL.mkdir(parents=True, exist_ok=True)
+    C.OUTPUT_PARTIAL.mkdir(parents=True, exist_ok=True)
 
     # Khôi phục các gói 'in_progress' quá hạn (do lần chạy trước bị crash)
     recovered = db.reclaim_stale(stale_seconds=900)
@@ -309,13 +336,57 @@ def run_download(
     logger.info(f"[{worker_id}] Kết thúc. Đã tải {local_done} gói trong lần chạy này.")
 
 
+def reclassify_existing() -> None:
+    """Phân loại lại các thư mục gói đã tải (từ phiên bản cũ chưa phân loại)
+    vào du/ (đủ 2 file) hoặc thieu/ (thiếu), dựa trên số file PDF thực tế.
+    """
+    import shutil
+
+    C.OUTPUT_FULL.mkdir(parents=True, exist_ok=True)
+    C.OUTPUT_PARTIAL.mkdir(parents=True, exist_ok=True)
+    tbmt_name = "Thông báo mời thầu.pdf"
+    hsmt_name = "Hồ sơ mời thầu.pdf"
+
+    moved_full = moved_partial = 0
+    for entry in list(C.OUTPUT_ROOT.iterdir()):
+        # Bỏ qua chính các thư mục phân loại và thư mục tạm
+        if not entry.is_dir() or entry.name in ("du", "thieu", "_tmp"):
+            continue
+        has_tbmt = (entry / tbmt_name).exists()
+        has_hsmt = (entry / hsmt_name).exists()
+        is_full = has_tbmt and has_hsmt
+        dest_root = C.OUTPUT_FULL if is_full else C.OUTPUT_PARTIAL
+        dest = dest_root / entry.name
+        try:
+            if dest.exists():
+                shutil.rmtree(dest, ignore_errors=True)
+            shutil.move(str(entry), str(dest))
+            if is_full:
+                moved_full += 1
+            else:
+                moved_partial += 1
+        except Exception as e:  # noqa: BLE001
+            print(f"Bỏ qua {entry.name}: {e}")
+    print(f"Phân loại lại xong: du={moved_full}, thieu={moved_partial}")
+
+
 def print_status(db: StateDB) -> None:
     stats = db.count_by_status()
     total = db.total()
     print("=== TIẾN ĐỘ CÀO ===")
     print(f"Tổng gói trong DB : {total}")
-    for k in ("pending", "done", "failed", "skipped"):
-        print(f"  {k:8s}: {stats.get(k, 0)}")
+    for k in ("pending", "in_progress", "done", "failed", "skipped"):
+        print(f"  {k:12s}: {stats.get(k, 0)}")
+    # Đủ/thiếu trong số gói done
+    try:
+        full = db._conn.execute(
+            "SELECT COUNT(*) FROM bids WHERE status='done' AND tbmt_ok=1 AND hsmt_ok=1"
+        ).fetchone()[0]
+        done = stats.get("done", 0)
+        print(f"  -> Đủ 2 file  : {full}")
+        print(f"  -> Thiếu file : {done - full}")
+    except Exception:
+        pass
     print(f"Trang discovery cuối: {db.get_meta('discovery_last_page', '-')}")
 
 
@@ -328,6 +399,8 @@ def main() -> None:
     ap.add_argument("--download-only", action="store_true",
                     help="Chỉ tải (dùng danh sách đã có), resume")
     ap.add_argument("--status", action="store_true", help="In tiến độ rồi thoát")
+    ap.add_argument("--reclassify", action="store_true",
+                    help="Phân loại lại các thư mục gói đã tải vào du/ và thieu/ rồi thoát")
     ap.add_argument("--show", action="store_true", help="Hiện trình duyệt")
     ap.add_argument(
         "--max-download", type=int, default=None,
@@ -345,6 +418,10 @@ def main() -> None:
     try:
         if args.status:
             print_status(db)
+            return
+
+        if args.reclassify:
+            reclassify_existing()
             return
 
         headless = not args.show
