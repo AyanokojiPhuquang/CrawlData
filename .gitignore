@@ -1,0 +1,25 @@
+# Môi trường ảo / build
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+build/
+dist/
+*.egg-info/
+
+# Dữ liệu cào & trạng thái (không đưa lên repo)
+data/
+scrape_state.db
+scrape_state.db-wal
+scrape_state.db-shm
+scraper.log
+
+# File mẫu / tạm
+*.html
+sample_*.txt
+*.pdf
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store

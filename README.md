@@ -1,0 +1,124 @@
+# CrawlData — Cào dữ liệu đấu thầu muasamcong.mpi.gov.vn
+
+Trình cào tự động tải **Thông báo mời thầu (TBMT)** và **Hồ sơ mời thầu (HSMT)**
+của các gói thầu ở tab **"Chưa đóng thầu"** trên
+[Hệ thống mạng đấu thầu quốc gia](https://muasamcong.mpi.gov.vn/web/guest/contractor-selection?render=index).
+
+Với mỗi gói thầu, chương trình tạo một thư mục theo tên gói và lưu 2 file PDF vào đó.
+
+## Kiến trúc
+
+Thiết kế theo 2 pha, dùng SQLite làm checkpoint để chịu tải lớn (hàng trăm nghìn gói)
+và có thể dừng/chạy lại mà không cào trùng.
+
+| File | Vai trò |
+|------|---------|
+| `config.py`   | Cấu hình tập trung (timeout, số lần retry, throttle, đường dẫn) |
+| `db.py`       | Sổ theo dõi trạng thái bằng SQLite (checkpoint, khử trùng theo `notify_id`) |
+| `browser.py`  | Khởi tạo Firefox (Selenium) + xử lý TLS, alert, các thao tác DOM |
+| `downloader.py` | Tải TBMT và HSMT (qua trình xem biểu mẫu webform) |
+| `discovery.py`  | Pha 1 — thu thập danh sách gói thầu, lưu vào DB |
+| `run_scraper.py`| Điều phối chính (pha 2 tải file) + giao diện dòng lệnh |
+
+### Vì sao dùng Firefox (không phải Chromium/requests)?
+
+Server muasamcong dùng khóa Diffie-Hellman yếu trong TLS. OpenSSL/BoringSSL đời mới
+(dùng bởi `requests` và Chromium) từ chối bắt tay và bị **reset kết nối**. Firefox cho
+phép bật lại cipher DHE cũ qua `about:config`, nên kết nối ổn định. Ngoài ra trang render
+bằng JavaScript và có reCAPTCHA nên cần trình duyệt thật.
+
+## Yêu cầu hệ thống
+
+- Python >= 3.12
+- [uv](https://docs.astral.sh/uv/) để quản lý môi trường
+- **Firefox** và **geckodriver** cài sẵn trên máy
+
+Mặc định đường dẫn trong `config.py` trỏ tới bản Firefox snap của Ubuntu:
+
+```python
+GECKODRIVER = "/snap/bin/geckodriver"
+FIREFOX_BIN = "/snap/firefox/current/usr/lib/firefox/firefox"
+```
+
+Nếu server dùng đường dẫn khác, hãy sửa 2 biến này (xem `which firefox`, `which geckodriver`).
+
+## Cài đặt
+
+```bash
+git clone https://github.com/AyanokojiPhuquang/CrawlData.git
+cd CrawlData
+uv sync                 # tạo môi trường & cài dependencies từ uv.lock
+```
+
+Cài Firefox + geckodriver (nếu server chưa có), ví dụ trên Ubuntu:
+
+```bash
+sudo snap install firefox
+sudo snap install geckodriver     # hoặc tải từ trang mozilla/geckodriver
+```
+
+## Sử dụng
+
+```bash
+# Cào 40 gói (thu thập danh sách + tải, dừng khi đủ 40 gói thành công)
+uv run python run_scraper.py --limit 40
+
+# Cào quy mô lớn: thu thập 600.000 gói rồi tải hết (resume được nếu bị ngắt)
+uv run python run_scraper.py --limit 600000 --max-download 0
+
+# Chỉ thu thập danh sách vào DB (chưa tải)
+uv run python run_scraper.py --limit 600000 --discover-only
+
+# Chỉ tải (dùng danh sách đã thu thập), tự resume từ checkpoint
+uv run python run_scraper.py --download-only --max-download 0
+
+# Xem tiến độ hiện tại
+uv run python run_scraper.py --status
+
+# Hiện cửa sổ trình duyệt để theo dõi (mặc định chạy ẩn/headless)
+uv run python run_scraper.py --limit 10 --show
+```
+
+### Tham số
+
+| Tham số | Ý nghĩa |
+|---------|---------|
+| `--limit N`        | Số gói cần thu thập ở pha discovery (và mặc định là số gói tải thành công) |
+| `--max-download N` | Số gói tải **thành công** tối đa. Đặt `0` để tải hết những gì có trong DB |
+| `--discover-only`  | Chỉ thu thập danh sách, không tải |
+| `--download-only`  | Chỉ tải (bỏ qua discovery), resume từ DB |
+| `--status`         | In tiến độ rồi thoát |
+| `--show`           | Hiện trình duyệt (không headless) |
+
+## Kết quả
+
+```
+data/
+├── <Tên gói thầu 1>/
+│   ├── Thông báo mời thầu.pdf
+│   └── Hồ sơ mời thầu.pdf
+├── <Tên gói thầu 2>/
+│   └── ...
+```
+
+- Trạng thái cào lưu trong `scrape_state.db` (SQLite). Xoá file này để cào lại từ đầu.
+- Log ghi ra `scraper.log` và console.
+
+## Cơ chế chịu tải & độ bền
+
+- **Checkpoint SQLite**: mỗi gói có trạng thái `pending / done / failed / skipped`;
+  chạy lại chỉ xử lý gói chưa xong, khử trùng theo `notify_id`.
+- **Retry**: gói lỗi được thử lại đến `MAX_ATTEMPTS` lần, quá số lần thì `skipped`.
+- **Retry điều hướng**: tự thử lại khi trang timeout / server chập chờn.
+- **Khởi động lại trình duyệt** định kỳ và khi gặp nhiều lỗi liên tiếp (giải phóng RAM,
+  tránh treo phiên).
+- **Throttle** giữa các gói để giảm tải server.
+
+Tinh chỉnh các ngưỡng này trong `config.py`.
+
+## Lưu ý
+
+- Một số gói không có "biểu mẫu webform" nên chỉ tải được TBMT — đây là trường hợp
+  hợp lệ, gói vẫn được đánh dấu hoàn tất khi có ít nhất một tài liệu.
+- Chạy trên server nên dùng chế độ headless mặc định. Với server không có màn hình,
+  Firefox headless hoạt động bình thường.
