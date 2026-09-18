@@ -44,8 +44,12 @@ def make_driver(headless: bool = True) -> webdriver.Firefox:
         "security.ssl.require_safe_negotiation": False,
         "security.ssl.treat_unsafe_negotiation_as_broken": False,
         "intl.accept_languages": "vi-VN, vi, en",
-        # Tải file tự động về thư mục Downloads mặc định
-        "browser.download.folderList": 1,
+        # Tải file tự động về THƯ MỤC TUỲ CHỈNH của worker (folderList=2 + dir).
+        # Quan trọng khi chạy nhiều worker: mỗi worker 1 thư mục riêng.
+        "browser.download.folderList": 2,
+        "browser.download.dir": str(C.DOWNLOAD_DIR),
+        "browser.download.downloadDir": str(C.DOWNLOAD_DIR),
+        "browser.download.defaultFolder": str(C.DOWNLOAD_DIR),
         "browser.download.manager.showWhenStarting": False,
         "pdfjs.disabled": True,
         "browser.helperApps.neverAsk.saveToDisk": (
