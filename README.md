@@ -142,16 +142,30 @@ Hệ thống được thiết kế để chạy liên tục nhiều ngày mà kh
 - **Reclaim gói crash**: gói `in_progress` quá 30 phút được đưa về `pending` để retry.
 - **Log xoay vòng** (20MB × 5 file) → không phình đĩa.
 
-Chạy nền, sống sót khi ngắt SSH:
+Chạy nền, sống sót khi ngắt SSH (dùng `setsid` để tách khỏi phiên SSH):
 
 ```bash
 cd ~/CrawlData
 setsid bash -c './run_workers.sh 2 > logs/workers_main.log 2>&1' < /dev/null &>/dev/null &
-
-# Theo dõi
-tail -f logs/worker_w1.log
-uv run python run_scraper.py --status
 ```
+
+Kiểm tra tiến độ bất cứ lúc nào (kết nối SSH mới rồi chạy):
+
+```bash
+cd ~/CrawlData
+./check_progress.sh            # xem tổng quan: %, đủ/thiếu, tốc độ, ETA
+tail -f logs/worker_w1.log     # xem log realtime worker 1
+```
+
+Dừng:
+
+```bash
+./stop_workers.sh
+```
+
+> Worker chạy qua `setsid` nên **không bị dừng khi ngắt SSH**. Nếu server reboot,
+> chạy lại lệnh `setsid ... run_workers.sh` — hệ thống tự resume từ checkpoint,
+> không tải trùng gói đã xong.
 
 > Số worker khuyến nghị theo RAM (mỗi Firefox ~500-700MB, không swap):
 > 4GB → 2 worker · 8GB → 3-4 worker · 16GB → 6-8 worker.
