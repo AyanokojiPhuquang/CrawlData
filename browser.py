@@ -56,6 +56,13 @@ def make_driver(headless: bool = True) -> webdriver.Firefox:
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ),
         "browser.download.always_ask_before_handling_new_types": False,
+        # Cho phép popup/window.open (nút 'Tải TBMT' mở tab PDF bằng window.open).
+        # Trên server headless popup bị chặn mặc định -> phải tắt chặn.
+        "dom.disable_open_during_load": False,
+        "dom.popup_maximum": 0,
+        "privacy.popups.disable_from_plugins": 0,
+        "browser.link.open_newwindow": 3,   # mở trong tab mới
+        "browser.link.open_newwindow.restriction": 0,
         # Giảm tiêu thụ tài nguyên khi chạy dài (quan trọng cho server RAM thấp)
         "browser.cache.disk.enable": False,
         "browser.cache.memory.enable": True,
