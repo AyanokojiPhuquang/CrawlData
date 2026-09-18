@@ -58,7 +58,7 @@ DOWNLOAD_TIMEOUT = 90          # giây, chờ HSMT (file lớn) tải xong
 TBMT_TIMEOUT = 40              # giây, TBMT là file nhỏ -> phát hiện lỗi sớm
 VIEWER_RENDER_TIMEOUT = 60     # giây, chờ viewer webform render
 MAX_CONSECUTIVE_FAILS = 4      # số lỗi liên tiếp -> khởi động lại trình duyệt
-RESTART_BROWSER_EVERY = 40     # khởi động lại trình duyệt sau N gói (tránh rò rỉ RAM)
+RESTART_BROWSER_EVERY = 25     # khởi động lại trình duyệt sau N gói (giải phóng RAM)
 THROTTLE_SECONDS = 1.5         # nghỉ giữa các gói để giảm tải server
 PAGE_SETTLE = 6                # giây chờ trang ổn định sau điều hướng
 

@@ -56,9 +56,17 @@ def make_driver(headless: bool = True) -> webdriver.Firefox:
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ),
         "browser.download.always_ask_before_handling_new_types": False,
-        # Giảm tiêu thụ tài nguyên khi chạy dài
+        # Giảm tiêu thụ tài nguyên khi chạy dài (quan trọng cho server RAM thấp)
         "browser.cache.disk.enable": False,
-        "browser.sessionhistory.max_entries": 3,
+        "browser.cache.memory.enable": True,
+        "browser.cache.memory.capacity": 32768,  # 32MB cache RAM
+        "browser.sessionhistory.max_entries": 2,
+        "dom.ipc.processCount": 1,          # 1 content process (giảm RAM)
+        "fission.autostart": False,          # tắt site isolation (đỡ tốn process)
+        "browser.tabs.remote.autostart": False,
+        "image.mem.decode_bytes_at_a_time": 1048576,
+        "media.autoplay.default": 5,
+        "permissions.default.image": 1,
     }
     for k, v in prefs.items():
         opts.set_preference(k, v)

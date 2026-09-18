@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Dừng tất cả worker và trình duyệt liên quan.
+# Dừng tất cả worker và trình duyệt liên quan (triệt để).
+pkill -f "run_workers.sh" 2>/dev/null
 pkill -f "run_scraper.py" 2>/dev/null
-pkill -f "firefox" 2>/dev/null
-pkill -f "geckodriver" 2>/dev/null
-echo "Đã gửi tín hiệu dừng tới các worker."
+sleep 2
+pkill -9 -f "firefox" 2>/dev/null       # bắt cả firefox-bin
+pkill -9 -f "geckodriver" 2>/dev/null
+sleep 1
+echo "Đã dừng worker. Firefox còn lại: $(pgrep -c firefox 2>/dev/null || echo 0)"
