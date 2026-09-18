@@ -23,14 +23,34 @@ from utils import extract_notify_id, extract_notify_no
 
 
 def _links_on_page(driver) -> list[tuple[str, str]]:
-    out, seen = [], set()
-    for a in driver.find_elements(By.CSS_SELECTOR, "a[href*='render=detail']"):
-        href = a.get_attribute("href") or ""
-        title = (a.text or "").strip()
-        if href and href not in seen:
-            seen.add(href)
-            out.append((title, href))
-    return out
+    """Lấy (title, href) các gói bằng JS một lượt để tránh StaleElementReference."""
+    try:
+        data = driver.execute_script(
+            """
+            const out = [];
+            const seen = new Set();
+            document.querySelectorAll("a[href*='render=detail']").forEach(a => {
+                const href = a.href || "";
+                const title = (a.textContent || "").trim();
+                if (href && !seen.has(href)) { seen.add(href); out.push([title, href]); }
+            });
+            return out;
+            """
+        )
+        return [(t, h) for t, h in (data or [])]
+    except Exception:
+        # fallback an toàn nếu execute_script lỗi
+        out, seen = [], set()
+        for a in driver.find_elements(By.CSS_SELECTOR, "a[href*='render=detail']"):
+            try:
+                href = a.get_attribute("href") or ""
+                title = (a.text or "").strip()
+            except Exception:
+                continue
+            if href and href not in seen:
+                seen.add(href)
+                out.append((title, href))
+        return out
 
 
 def _go_next_page(driver) -> bool:
@@ -78,10 +98,18 @@ def discover(driver, db: StateDB, logger, target: int) -> int:
     added_total = 0
     page = 1
     max_pages = 100000
-    empty_streak = 0
+    no_link_streak = 0  # số trang liên tiếp KHÔNG có link nào (hết dữ liệu)
+    start_count = db.total()
 
-    while added_total < target and page < max_pages:
-        links = _links_on_page(driver)
+    # Dừng khi TỔNG gói trong DB đạt target (hỗ trợ resume: gói cũ vẫn tính)
+    while db.total() < target and page < max_pages:
+        try:
+            links = _links_on_page(driver)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[DISCOVERY] Lỗi đọc trang {page}: {str(e)[:60]}, thử lại")
+            time.sleep(3)
+            dismiss_alert(driver)
+            links = _links_on_page(driver)
         added_this_page = 0
         for title, href in links:
             nid = extract_notify_id(href)
@@ -96,16 +124,18 @@ def discover(driver, db: StateDB, logger, target: int) -> int:
         )
         db.set_meta("discovery_last_page", str(page))
 
-        if added_this_page == 0:
-            empty_streak += 1
-            if empty_streak >= 3:
-                logger.info("[DISCOVERY] 3 trang liên tục không có gói mới -> dừng")
+        # Chỉ dừng khi trang KHÔNG có link nào (thực sự hết dữ liệu),
+        # không dừng vì gói trùng (để resume duyệt qua vùng đã có).
+        if len(links) == 0:
+            no_link_streak += 1
+            if no_link_streak >= 3:
+                logger.info("[DISCOVERY] 3 trang liên tục rỗng -> hết dữ liệu, dừng")
                 break
         else:
-            empty_streak = 0
+            no_link_streak = 0
 
         # đủ mục tiêu?
-        if added_total >= target:
+        if db.total() >= target:
             break
 
         prev_first = links[0][1] if links else None
@@ -121,5 +151,8 @@ def discover(driver, db: StateDB, logger, target: int) -> int:
                 break
         dismiss_alert(driver)
 
-    logger.info(f"[DISCOVERY] Hoàn tất: thêm {added_total} gói mới vào DB")
+    logger.info(
+        f"[DISCOVERY] Hoàn tất: thêm {added_total} gói mới "
+        f"(DB: {start_count} -> {db.total()})"
+    )
     return added_total

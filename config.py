@@ -21,8 +21,12 @@ PUBLISH_DATE_TO = "31/01/2026"
 # Tab cần cào sau khi lọc: 'all' | 'open' (chưa đóng) | 'closed' (đã đóng)
 TARGET_TAB = "all"
 
-GECKODRIVER = "/snap/bin/geckodriver"
-FIREFOX_BIN = "/snap/firefox/current/usr/lib/firefox/firefox"
+import os as _os
+
+# Đường dẫn Firefox/geckodriver — có thể ghi đè qua biến môi trường.
+# Mặc định theo bản snap Ubuntu desktop; server thường dùng /usr/local/bin, /usr/bin.
+GECKODRIVER = _os.environ.get("GECKODRIVER_PATH", "/snap/bin/geckodriver")
+FIREFOX_BIN = _os.environ.get("FIREFOX_BIN", "/snap/firefox/current/usr/lib/firefox/firefox")
 
 OUTPUT_ROOT = Path("data")
 DOWNLOAD_DIR = Path.home() / "Downloads"  # Firefox tải về đây (do site dùng blob)

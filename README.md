@@ -93,6 +93,40 @@ uv run python run_scraper.py --status
 uv run python run_scraper.py --limit 10 --show
 ```
 
+## Chạy song song nhiều worker (tăng tốc)
+
+Sau khi đã discovery xong (DB có các gói `pending`), chạy nhiều worker tải song song.
+Mỗi worker là 1 tiến trình độc lập, cùng "claim" gói từ SQLite theo cơ chế atomic nên
+**không bao giờ tải trùng**. Worker crash sẽ tự khởi động lại; gói đang dở (`in_progress`)
+quá 15 phút sẽ được tự động đưa về `pending` để retry.
+
+```bash
+# Thu thập danh sách trước
+uv run python run_scraper.py --limit 7000 --discover-only
+
+# Chạy 2 worker tải song song (điều chỉnh theo RAM: mỗi Firefox ~600-700MB)
+chmod +x run_workers.sh stop_workers.sh
+./run_workers.sh 2
+
+# Theo dõi tiến độ (từ máy khác / terminal khác)
+uv run python run_scraper.py --status
+tail -f logs/worker_w1.log
+
+# Dừng tất cả
+./stop_workers.sh
+```
+
+### Đường dẫn Firefox/geckodriver
+
+Ghi đè qua biến môi trường nếu server không dùng snap:
+
+```bash
+export FIREFOX_BIN=/usr/bin/firefox
+export GECKODRIVER_PATH=/usr/local/bin/geckodriver
+```
+
+Nếu không đặt, chương trình tự tìm `firefox`/`geckodriver` trong PATH.
+
 ### Tham số
 
 | Tham số | Ý nghĩa |

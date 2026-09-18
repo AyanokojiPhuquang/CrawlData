@@ -25,10 +25,14 @@ import config as C
 
 
 def make_driver(headless: bool = True) -> webdriver.Firefox:
+    import os
+
     opts = Options()
     if headless:
         opts.add_argument("-headless")
-    opts.binary_location = C.FIREFOX_BIN
+    # Chỉ set binary_location nếu đường dẫn tồn tại; nếu không, để Selenium tự tìm firefox
+    if C.FIREFOX_BIN and os.path.exists(C.FIREFOX_BIN):
+        opts.binary_location = C.FIREFOX_BIN
     C.DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
     prefs = {
@@ -59,7 +63,10 @@ def make_driver(headless: bool = True) -> webdriver.Firefox:
     for k, v in prefs.items():
         opts.set_preference(k, v)
 
-    service = Service(executable_path=C.GECKODRIVER)
+    if C.GECKODRIVER and os.path.exists(C.GECKODRIVER):
+        service = Service(executable_path=C.GECKODRIVER)
+    else:
+        service = Service()  # tự tìm geckodriver trong PATH
     driver = webdriver.Firefox(service=service, options=opts)
     driver.set_page_load_timeout(75)
     return driver

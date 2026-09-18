@@ -9,10 +9,15 @@ Mục tiêu:
 Khử trùng dựa trên `notify_id` (ID gói thầu trích từ URL chi tiết) - là khoá duy nhất.
 
 Trạng thái (status):
-  pending  : mới phát hiện, chưa tải
-  done     : đã tải xong (đủ hoặc một phần theo tài liệu có sẵn)
-  failed   : tải lỗi, sẽ được retry ở lần chạy sau (đến max_attempts)
-  skipped  : đã thử quá số lần cho phép -> bỏ qua
+  pending      : mới phát hiện, chưa tải
+  in_progress  : đang được 1 worker xử lý (claim) - tránh worker khác lấy trùng
+  done         : đã tải xong (đủ hoặc một phần theo tài liệu có sẵn)
+  failed       : tải lỗi, sẽ được retry ở lần chạy sau (đến max_attempts)
+  skipped      : đã thử quá số lần cho phép -> bỏ qua
+
+Chạy song song nhiều worker: dùng claim_next() (transaction IMMEDIATE) để mỗi gói
+chỉ được đúng một worker nhận. Nếu worker crash, gói 'in_progress' quá hạn sẽ được
+recover về 'pending' ở lần khởi động sau (xem reclaim_stale).
 """
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ CREATE TABLE IF NOT EXISTS bids (
     tbmt_ok       INTEGER NOT NULL DEFAULT 0,   -- đã tải TBMT chưa
     hsmt_ok       INTEGER NOT NULL DEFAULT 0,   -- đã tải HSMT chưa
     last_error    TEXT,
+    worker        TEXT,                         -- worker đang/đã xử lý
     discovered_at REAL,
     updated_at    REAL
 );
@@ -59,6 +65,8 @@ class StateDB:
         # WAL để đọc/ghi song song tốt hơn khi chạy dài
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.execute("PRAGMA synchronous=NORMAL;")
+        # Chờ tối đa 30s khi DB bị khoá bởi worker khác (tránh 'database is locked')
+        self._conn.execute("PRAGMA busy_timeout=30000;")
         self._conn.executescript(SCHEMA)
         self._conn.commit()
 
@@ -114,6 +122,51 @@ class StateDB:
             (max_attempts, batch),
         )
         return cur.fetchall()
+
+    def claim_next(self, max_attempts: int, worker_id: str) -> Optional[sqlite3.Row]:
+        """Giành (claim) 1 gói để xử lý theo cách ATOMIC cho nhiều worker.
+
+        Dùng transaction IMMEDIATE để khoá ghi -> chỉ 1 worker nhận được 1 gói.
+        Đánh dấu gói thành 'in_progress', tăng attempts, gán worker_id.
+        Trả về row đã claim, hoặc None nếu không còn gói.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute(
+                """SELECT * FROM bids
+                   WHERE status IN ('pending','failed') AND attempts < ?
+                   ORDER BY discovered_at ASC LIMIT 1""",
+                (max_attempts,),
+            ).fetchone()
+            if row is None:
+                self._conn.execute("COMMIT")
+                return None
+            self._conn.execute(
+                """UPDATE bids
+                   SET status='in_progress', attempts=attempts+1,
+                       worker=?, updated_at=?
+                   WHERE notify_id=?""",
+                (worker_id, time.time(), row["notify_id"]),
+            )
+            self._conn.execute("COMMIT")
+            return row
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+
+    def reclaim_stale(self, stale_seconds: int = 900) -> int:
+        """Đưa các gói 'in_progress' quá hạn (worker crash) về 'pending' để retry.
+
+        Trả số gói được khôi phục.
+        """
+        cutoff = time.time() - stale_seconds
+        with self._tx() as c:
+            cur = c.execute(
+                """UPDATE bids SET status='pending'
+                   WHERE status='in_progress' AND updated_at < ?""",
+                (cutoff,),
+            )
+            return cur.rowcount
 
     def mark_in_progress(self, notify_id: str) -> None:
         with self._tx() as c:

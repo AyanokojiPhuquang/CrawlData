@@ -100,16 +100,22 @@ def process_one(driver, row) -> tuple[bool, bool, str]:
     return tbmt_ok, hsmt_ok, str(folder)
 
 
-def run_download(db: StateDB, headless: bool, max_download: int | None = None) -> None:
+def run_download(
+    db: StateDB,
+    headless: bool,
+    max_download: int | None = None,
+    worker_id: str = "w0",
+) -> None:
+    # Khôi phục các gói 'in_progress' quá hạn (do lần chạy trước bị crash)
+    recovered = db.reclaim_stale(stale_seconds=900)
+    if recovered:
+        logger.info(f"[{worker_id}] Khôi phục {recovered} gói in_progress quá hạn")
+
     stats = db.count_by_status()
-    todo = stats.get("pending", 0) + stats.get("failed", 0)
-    if max_download:
-        todo = min(todo, max_download)
-    logger.info(
-        f"[DOWNLOAD] Bắt đầu. Sẽ xử lý tối đa {todo} gói. Trạng thái: {stats}"
-    )
-    # Số gói đã tải THÀNH CÔNG (done) trong lần chạy này
+    logger.info(f"[{worker_id}] [DOWNLOAD] Bắt đầu. Trạng thái: {stats}")
+    # Số gói đã tải THÀNH CÔNG (done) trong lần chạy này (giới hạn theo worker)
     success_target = max_download
+    local_done = 0
 
     driver = make_driver(headless=headless)
     processed_since_restart = 0
@@ -125,27 +131,26 @@ def run_download(db: StateDB, headless: bool, max_download: int | None = None) -
 
     try:
         while True:
-            # Dừng khi đã đạt đủ số gói done theo yêu cầu
-            if success_target is not None:
-                done_now = db.count_by_status().get("done", 0)
-                if done_now >= success_target:
-                    logger.info(
-                        f"[DOWNLOAD] Đã đạt {done_now} gói done (>= {success_target}) -> dừng"
-                    )
-                    break
-            rows = db.next_pending(C.MAX_ATTEMPTS, batch=1)
-            if not rows:
+            # Dừng khi worker này đã tải đủ số gói done theo yêu cầu
+            if success_target is not None and local_done >= success_target:
+                logger.info(
+                    f"[{worker_id}] Đã đạt {local_done} gói done (>= {success_target}) -> dừng"
+                )
                 break
-            row = rows[0]
+            # Claim 1 gói atomic (an toàn cho nhiều worker)
+            row = db.claim_next(C.MAX_ATTEMPTS, worker_id)
+            if row is None:
+                logger.info(f"[{worker_id}] Không còn gói -> dừng")
+                break
             nid = row["notify_id"]
-            db.mark_in_progress(nid)
 
-            logger.info(f"[{done_count + 1}] {row['notify_no'] or nid}")
+            logger.info(f"[{worker_id}][{done_count + 1}] {row['notify_no'] or nid}")
             try:
                 tbmt_ok, hsmt_ok, folder = process_one(driver, row)
                 if tbmt_ok or hsmt_ok:
                     db.mark_done(nid, folder, tbmt_ok, hsmt_ok)
                     consecutive_fails = 0
+                    local_done += 1
                 else:
                     db.mark_failed(nid, "Không tải được file nào", C.MAX_ATTEMPTS)
                     consecutive_fails += 1
@@ -176,14 +181,16 @@ def run_download(db: StateDB, headless: bool, max_download: int | None = None) -
 
             # In tiến độ định kỳ
             if done_count % 20 == 0:
-                logger.info(f"[DOWNLOAD] Tiến độ: {db.count_by_status()}")
+                logger.info(f"[{worker_id}] Tiến độ chung: {db.count_by_status()}")
     finally:
         try:
             driver.quit()
         except Exception:
             pass
 
-    logger.info(f"[DOWNLOAD] Kết thúc. Trạng thái cuối: {db.count_by_status()}")
+    logger.info(
+        f"[{worker_id}] Kết thúc. Đã tải {local_done} gói. Trạng thái: {db.count_by_status()}"
+    )
 
 
 def print_status(db: StateDB) -> None:
@@ -209,6 +216,10 @@ def main() -> None:
     ap.add_argument(
         "--max-download", type=int, default=None,
         help="Số gói tải THÀNH CÔNG tối đa (mặc định = --limit). Đặt 0 để tải hết DB.",
+    )
+    ap.add_argument(
+        "--worker-id", type=str, default="w0",
+        help="Định danh worker (khi chạy song song nhiều tiến trình)",
     )
     args = ap.parse_args()
 
@@ -238,7 +249,9 @@ def main() -> None:
                 max_dl = args.limit
             else:
                 max_dl = args.max_download or None
-            run_download(db, headless=headless, max_download=max_dl)
+            run_download(
+                db, headless=headless, max_download=max_dl, worker_id=args.worker_id
+            )
 
         print_status(db)
     finally:
