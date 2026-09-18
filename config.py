@@ -16,8 +16,8 @@ SEARCH_URL = (
 )
 
 # --- Bộ lọc theo khoảng ngày đăng tải (dd/mm/yyyy). None = không lọc ---
-PUBLISH_DATE_FROM = "01/01/2026"
-PUBLISH_DATE_TO = "31/01/2026"
+PUBLISH_DATE_FROM = "01/04/2026"
+PUBLISH_DATE_TO = "30/04/2026"
 # Tab cần cào sau khi lọc: 'all' | 'open' (chưa đóng) | 'closed' (đã đóng)
 TARGET_TAB = "all"
 

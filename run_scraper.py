@@ -48,15 +48,30 @@ from utils import sanitize_folder_name
 logger = C.setup_logging()
 
 
-def _has_webform_button(driver, tries: int = 12) -> bool:
+def _detect_hsmt_kind(driver, tries: int = 8) -> str:
+    """Xác định loại HSMT trong tab: 'webform' | 'attach' | 'none'.
+
+    - webform: có nút 'Tải tất cả biểu mẫu webform' -> tải được.
+    - attach : chỉ có 'Tải tất cả file đính kèm' -> bỏ qua (theo yêu cầu).
+    - none   : không thấy gì -> chờ thêm rồi kết luận không có.
+    """
     for _ in range(tries):
-        spans = driver.find_elements(
-            By.XPATH, "//span[contains(normalize-space(.),'biểu mẫu webform')]"
-        )
-        if any(s.is_displayed() for s in spans):
-            return True
+        webform = [
+            s for s in driver.find_elements(
+                By.XPATH, "//span[contains(normalize-space(.),'biểu mẫu webform')]"
+            ) if s.is_displayed()
+        ]
+        if webform:
+            return "webform"
+        attach = [
+            s for s in driver.find_elements(
+                By.XPATH, "//span[contains(normalize-space(.),'file đính kèm')]"
+            ) if s.is_displayed()
+        ]
+        if attach:
+            return "attach"
         time.sleep(1.5)
-    return False
+    return "none"
 
 
 def process_one(driver, row) -> tuple[bool, bool, str]:
@@ -86,18 +101,18 @@ def process_one(driver, row) -> tuple[bool, bool, str]:
     time.sleep(2)
     tbmt_ok = download_tbmt(driver, folder / "Thông báo mời thầu.pdf", logger)
 
-    # HSMT (webform)
+    # HSMT: chỉ tải khi gói có 'biểu mẫu webform'.
+    # Gói chỉ có 'Tải tất cả file đính kèm' (không có webform) -> bỏ qua HSMT (hợp lệ).
     hsmt_ok = False
-    for _ in range(3):
-        click_tab(driver, "Hồ sơ mời thầu")
-        time.sleep(3)
-        if _has_webform_button(driver):
-            hsmt_ok = download_hsmt_webform(
-                driver, folder / "Hồ sơ mời thầu.pdf", logger
-            )
-            break
-    if not hsmt_ok:
-        logger.warning("    HSMT: không có/không tải được biểu mẫu webform")
+    click_tab(driver, "Hồ sơ mời thầu")
+    time.sleep(3)
+    kind = _detect_hsmt_kind(driver)
+    if kind == "webform":
+        hsmt_ok = download_hsmt_webform(driver, folder / "Hồ sơ mời thầu.pdf", logger)
+    elif kind == "attach":
+        logger.info("    HSMT: chỉ có file đính kèm (không webform) -> bỏ qua")
+    else:
+        logger.warning("    HSMT: không có tài liệu webform")
 
     # Phân loại: ĐỦ (cả 2 file) -> data/du/ ; THIẾU -> data/thieu/
     final_folder = _finalize_folder(folder, safe_name, tbmt_ok, hsmt_ok)
