@@ -60,7 +60,9 @@ CREATE TABLE IF NOT EXISTS meta (
 class StateDB:
     def __init__(self, path: Path = DB_PATH) -> None:
         self.path = Path(path)
-        self._conn = sqlite3.connect(str(self.path), timeout=30)
+        # isolation_level=None -> autocommit; ta tự quản lý transaction (BEGIN IMMEDIATE)
+        # để claim_next atomic an toàn khi nhiều worker cùng ghi.
+        self._conn = sqlite3.connect(str(self.path), timeout=30, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         # WAL để đọc/ghi song song tốt hơn khi chạy dài
         self._conn.execute("PRAGMA journal_mode=WAL;")
@@ -75,11 +77,16 @@ class StateDB:
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
+        # Autocommit mode -> mở transaction tường minh để gom câu lệnh atomic
+        self._conn.execute("BEGIN")
         try:
             yield self._conn
-            self._conn.commit()
+            self._conn.execute("COMMIT")
         except Exception:
-            self._conn.rollback()
+            try:
+                self._conn.execute("ROLLBACK")
+            except Exception:
+                pass
             raise
 
     # ---------- Discovery (pha 1) ----------

@@ -46,7 +46,11 @@ FIREFOX_BIN = _first_existing(
 )
 
 OUTPUT_ROOT = Path("data")
-DOWNLOAD_DIR = Path.home() / "Downloads"  # Firefox tải về đây (do site dùng blob)
+# Thư mục tải file. Mỗi worker dùng thư mục RIÊNG để không nhặt nhầm file của nhau.
+# Ghi đè qua biến môi trường WORKER_DOWNLOAD_DIR (do run_workers.sh đặt).
+DOWNLOAD_DIR = Path(
+    _os.environ.get("WORKER_DOWNLOAD_DIR", str(Path.home() / "Downloads"))
+)
 LOG_FILE = Path("scraper.log")
 DB_PATH = Path("scrape_state.db")
 
@@ -64,6 +68,8 @@ PAGE_SETTLE = 6                # giây chờ trang ổn định sau điều hư�
 
 
 def setup_logging(name: str = "scraper") -> logging.Logger:
+    from logging.handlers import RotatingFileHandler
+
     logger = logging.getLogger(name)
     if logger.handlers:
         return logger
@@ -75,8 +81,10 @@ def setup_logging(name: str = "scraper") -> logging.Logger:
     ch = logging.StreamHandler()
     ch.setFormatter(fmt)
     logger.addHandler(ch)
-    # File (append để giữ lịch sử qua các lần chạy)
-    fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    # File có xoay vòng (tránh log phình vô hạn khi chạy nhiều ngày)
+    fh = RotatingFileHandler(
+        LOG_FILE, maxBytes=20 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    )
     fh.setFormatter(fmt)
     logger.addHandler(fh)
     return logger

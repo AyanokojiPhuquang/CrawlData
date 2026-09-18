@@ -127,6 +127,35 @@ export GECKODRIVER_PATH=/usr/local/bin/geckodriver
 
 Nếu không đặt, chương trình tự tìm `firefox`/`geckodriver` trong PATH.
 
+## Chạy production dài ngày (bền bỉ)
+
+Hệ thống được thiết kế để chạy liên tục nhiều ngày mà không cần giám sát:
+
+- **Mỗi worker có thư mục download riêng** (`~/dl_w1`, `~/dl_w2`...) → không nhặt nhầm
+  file của nhau; file rác `.part` được dọn trước mỗi lần tải.
+- **Claim atomic** (SQLite `BEGIN IMMEDIATE`) → không worker nào tải trùng gói.
+- **Tự phục hồi mọi lỗi**: lỗi DB, lỗi tạo trình duyệt, geckodriver treo, mất kết nối —
+  worker chờ & thử lại, không chết vĩnh viễn.
+- **Chống rò rỉ RAM**: khởi động lại trình duyệt mỗi 25 gói + dọn tiến trình firefox
+  mồ côi; **watchdog RAM** tạm dừng khi RAM khả dụng < 250MB (tránh OOM trên máy
+  không swap).
+- **Reclaim gói crash**: gói `in_progress` quá 30 phút được đưa về `pending` để retry.
+- **Log xoay vòng** (20MB × 5 file) → không phình đĩa.
+
+Chạy nền, sống sót khi ngắt SSH:
+
+```bash
+cd ~/CrawlData
+setsid bash -c './run_workers.sh 2 > logs/workers_main.log 2>&1' < /dev/null &>/dev/null &
+
+# Theo dõi
+tail -f logs/worker_w1.log
+uv run python run_scraper.py --status
+```
+
+> Số worker khuyến nghị theo RAM (mỗi Firefox ~500-700MB, không swap):
+> 4GB → 2 worker · 8GB → 3-4 worker · 16GB → 6-8 worker.
+
 ### Tham số
 
 | Tham số | Ý nghĩa |

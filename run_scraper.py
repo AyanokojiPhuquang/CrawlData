@@ -41,7 +41,7 @@ from browser import (
 )
 from db import StateDB
 from discovery import discover
-from downloader import download_hsmt_webform, download_tbmt
+from downloader import cleanup_download_dir, download_hsmt_webform, download_tbmt
 from selenium.webdriver.common.by import By
 from utils import sanitize_folder_name
 
@@ -100,12 +100,107 @@ def process_one(driver, row) -> tuple[bool, bool, str]:
     return tbmt_ok, hsmt_ok, str(folder)
 
 
+def _make_driver_resilient(headless: bool, worker_id: str, max_tries: int = 5):
+    """Tạo trình duyệt với retry — nếu thất bại (RAM tạm thời thiếu) thì chờ & thử lại."""
+    for i in range(max_tries):
+        try:
+            return make_driver(headless=headless)
+        except Exception as e:  # noqa: BLE001
+            wait = 15 * (i + 1)
+            logger.warning(
+                f"[{worker_id}] Tạo trình duyệt lỗi ({str(e)[:70]}), "
+                f"dọn tiến trình & chờ {wait}s (thử {i + 1}/{max_tries})"
+            )
+            _kill_orphan_processes()
+            time.sleep(wait)
+    return None
+
+
+def _restart_browser_resilient(driver, headless: bool, worker_id: str):
+    """Đóng trình duyệt cũ (kể cả treo) rồi tạo lại. Trả None nếu không tạo được."""
+    try:
+        driver.quit()
+    except Exception:
+        pass
+    _kill_orphan_processes()  # dọn firefox-bin zombie còn sót
+    time.sleep(2)
+    return _make_driver_resilient(headless, worker_id)
+
+
+def _safe_db(fn, *args) -> None:
+    """Gọi hàm ghi DB, thử lại vài lần nếu DB bị khoá tạm thời."""
+    for i in range(5):
+        try:
+            fn(*args)
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"    Ghi DB lỗi ({str(e)[:60]}), thử lại {i + 1}/5")
+            time.sleep(2 * (i + 1))
+    logger.error("    Ghi DB thất bại sau nhiều lần thử")
+
+
+def _available_ram_mb() -> int:
+    """Trả RAM khả dụng (MB). Đọc /proc/meminfo, trả -1 nếu không đọc được."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except Exception:
+        pass
+    return -1
+
+
+def _wait_for_ram(worker_id: str, min_mb: int = 250, max_wait: int = 120) -> None:
+    """Nếu RAM khả dụng thấp, chờ một chút cho worker khác giải phóng (tránh OOM)."""
+    waited = 0
+    while waited < max_wait:
+        avail = _available_ram_mb()
+        if avail < 0 or avail >= min_mb:
+            return
+        logger.warning(
+            f"[{worker_id}] RAM thấp ({avail}MB < {min_mb}MB), chờ 10s trước khi tiếp"
+        )
+        time.sleep(10)
+        waited += 10
+
+
+def _kill_orphan_processes() -> None:
+    """Dọn các tiến trình firefox/geckodriver mồ côi của CHÍNH tiến trình này.
+
+    Chỉ kill tiến trình con của process hiện tại để không ảnh hưởng worker khác.
+    """
+    import os
+    import signal
+    import subprocess
+
+    try:
+        # Lấy các tiến trình con (geckodriver/firefox) do worker này sinh ra
+        out = subprocess.run(
+            ["pgrep", "-P", str(os.getpid())],
+            capture_output=True, text=True, timeout=10,
+        )
+        for pid in out.stdout.split():
+            # kill cả cây tiến trình con
+            try:
+                subprocess.run(["pkill", "-9", "-P", pid], timeout=10)
+                os.kill(int(pid), signal.SIGKILL)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def run_download(
     db: StateDB,
     headless: bool,
     max_download: int | None = None,
     worker_id: str = "w0",
 ) -> None:
+    # Dọn thư mục download riêng của worker (tránh file rác từ lần trước)
+    cleanup_download_dir()
+    logger.info(f"[{worker_id}] Thư mục download: {C.DOWNLOAD_DIR}")
+
     # Khôi phục các gói 'in_progress' quá hạn (do lần chạy trước bị crash)
     recovered = db.reclaim_stale(stale_seconds=900)
     if recovered:
@@ -117,28 +212,46 @@ def run_download(
     success_target = max_download
     local_done = 0
 
-    driver = make_driver(headless=headless)
+    driver = _make_driver_resilient(headless, worker_id)
+    if driver is None:
+        logger.error(f"[{worker_id}] Không khởi tạo được trình duyệt -> thoát")
+        return
+
     processed_since_restart = 0
     consecutive_fails = 0
     done_count = 0
-
-    def restart_browser(nonlocal_driver):
-        try:
-            nonlocal_driver.quit()
-        except Exception:
-            pass
-        return make_driver(headless=headless)
+    last_reclaim = time.time()
 
     try:
         while True:
             # Dừng khi worker này đã tải đủ số gói done theo yêu cầu
             if success_target is not None and local_done >= success_target:
                 logger.info(
-                    f"[{worker_id}] Đã đạt {local_done} gói done (>= {success_target}) -> dừng"
+                    f"[{worker_id}] Đã đạt {local_done} gói (>= {success_target}) -> dừng"
                 )
                 break
-            # Claim 1 gói atomic (an toàn cho nhiều worker)
-            row = db.claim_next(C.MAX_ATTEMPTS, worker_id)
+
+            # Định kỳ reclaim gói in_progress quá hạn (worker khác crash hẳn).
+            # Ngưỡng 30 phút: đủ lớn để không giành nhầm gói worker khác đang xử lý.
+            if time.time() - last_reclaim > 600:
+                try:
+                    n = db.reclaim_stale(stale_seconds=1800)
+                    if n:
+                        logger.info(f"[{worker_id}] Reclaim {n} gói in_progress quá hạn")
+                except Exception:
+                    pass
+                last_reclaim = time.time()
+
+            # Bảo vệ chống OOM: chờ nếu RAM khả dụng quá thấp
+            _wait_for_ram(worker_id, min_mb=250)
+
+            # Claim 1 gói atomic (an toàn cho nhiều worker). Bọc lỗi DB.
+            try:
+                row = db.claim_next(C.MAX_ATTEMPTS, worker_id)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[{worker_id}] Lỗi claim DB: {str(e)[:80]}, chờ 10s")
+                time.sleep(10)
+                continue
             if row is None:
                 logger.info(f"[{worker_id}] Không còn gói -> dừng")
                 break
@@ -148,49 +261,52 @@ def run_download(
             try:
                 tbmt_ok, hsmt_ok, folder = process_one(driver, row)
                 if tbmt_ok or hsmt_ok:
-                    db.mark_done(nid, folder, tbmt_ok, hsmt_ok)
+                    _safe_db(db.mark_done, nid, folder, tbmt_ok, hsmt_ok)
                     consecutive_fails = 0
                     local_done += 1
                 else:
-                    db.mark_failed(nid, "Không tải được file nào", C.MAX_ATTEMPTS)
+                    _safe_db(db.mark_failed, nid, "Không tải được file nào", C.MAX_ATTEMPTS)
                     consecutive_fails += 1
             except Exception as e:  # noqa: BLE001
-                logger.error(f"    Lỗi: {str(e)[:120]}")
-                dismiss_alert(driver)
-                db.mark_failed(nid, str(e), C.MAX_ATTEMPTS)
+                logger.error(f"    Lỗi xử lý gói: {str(e)[:120]}")
+                try:
+                    dismiss_alert(driver)
+                except Exception:
+                    pass
+                _safe_db(db.mark_failed, nid, str(e), C.MAX_ATTEMPTS)
                 consecutive_fails += 1
 
             done_count += 1
             processed_since_restart += 1
             time.sleep(C.THROTTLE_SECONDS)
 
-            # Khởi động lại trình duyệt khi lỗi liên tiếp (có thể treo/nghẽn)
-            if consecutive_fails >= C.MAX_CONSECUTIVE_FAILS:
-                logger.warning(
-                    f"[DOWNLOAD] {consecutive_fails} lỗi liên tiếp -> khởi động lại trình duyệt"
-                )
-                driver = restart_browser(driver)
+            # Khởi động lại trình duyệt khi lỗi liên tiếp (treo/nghẽn/mất geckodriver)
+            need_restart = consecutive_fails >= C.MAX_CONSECUTIVE_FAILS
+            periodic_restart = processed_since_restart >= C.RESTART_BROWSER_EVERY
+            if need_restart or periodic_restart:
+                reason = "lỗi liên tiếp" if need_restart else "định kỳ giải phóng RAM"
+                logger.info(f"[{worker_id}] Khởi động lại trình duyệt ({reason})")
+                driver = _restart_browser_resilient(driver, headless, worker_id)
+                if driver is None:
+                    logger.error(f"[{worker_id}] Không khởi động lại được -> thoát vòng lặp")
+                    break
                 processed_since_restart = 0
                 consecutive_fails = 0
-                time.sleep(5)
-            # Khởi động lại định kỳ để giải phóng RAM
-            elif processed_since_restart >= C.RESTART_BROWSER_EVERY:
-                logger.info("[DOWNLOAD] Khởi động lại trình duyệt (giải phóng RAM)")
-                driver = restart_browser(driver)
-                processed_since_restart = 0
+                time.sleep(3)
 
-            # In tiến độ định kỳ
             if done_count % 20 == 0:
-                logger.info(f"[{worker_id}] Tiến độ chung: {db.count_by_status()}")
+                try:
+                    logger.info(f"[{worker_id}] Tiến độ chung: {db.count_by_status()}")
+                except Exception:
+                    pass
     finally:
         try:
             driver.quit()
         except Exception:
             pass
+        _kill_orphan_processes()
 
-    logger.info(
-        f"[{worker_id}] Kết thúc. Đã tải {local_done} gói. Trạng thái: {db.count_by_status()}"
-    )
+    logger.info(f"[{worker_id}] Kết thúc. Đã tải {local_done} gói trong lần chạy này.")
 
 
 def print_status(db: StateDB) -> None:

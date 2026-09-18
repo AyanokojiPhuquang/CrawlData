@@ -16,7 +16,27 @@ from browser import click_span_fileattach, close_extra_tabs
 
 
 def _snapshot(folder: Path) -> set[str]:
-    return {p.name for p in folder.iterdir()}
+    try:
+        return {p.name for p in folder.iterdir()}
+    except FileNotFoundError:
+        folder.mkdir(parents=True, exist_ok=True)
+        return set()
+
+
+def cleanup_download_dir() -> None:
+    """Xoá file rác (.part và file tải dở/cũ) trong thư mục download của worker.
+
+    Vì mỗi worker có thư mục RIÊNG, xoá sạch là an toàn và tránh phình dung lượng.
+    """
+    try:
+        for p in C.DOWNLOAD_DIR.iterdir():
+            try:
+                if p.is_file():
+                    p.unlink()
+            except Exception:
+                pass
+    except FileNotFoundError:
+        C.DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def wait_for_new_download(before: set[str], timeout: int = None) -> Path | None:
@@ -50,6 +70,7 @@ def _move_to(downloaded: Path, dest: Path) -> Path:
 def download_tbmt(driver, dest: Path, logger) -> bool:
     """Tải 'Tải TBMT' (mở tab PDF -> Firefox tự tải về Downloads)."""
     main = driver.current_window_handle
+    cleanup_download_dir()  # dọn file rác trước khi tải
     before = _snapshot(C.DOWNLOAD_DIR)
     if not click_span_fileattach(driver, "Tải TBMT"):
         logger.warning("    Không thấy nút 'Tải TBMT'")
@@ -68,6 +89,7 @@ def download_hsmt_webform(driver, dest: Path, logger) -> bool:
     """Tải HSMT: click 'Tải tất cả biểu mẫu webform' -> tab viewer -> 'Tải về'."""
     main = driver.current_window_handle
     handles_before = set(driver.window_handles)
+    cleanup_download_dir()  # dọn file rác trước khi tải
     before = _snapshot(C.DOWNLOAD_DIR)
 
     if not click_span_fileattach(driver, "biểu mẫu webform"):

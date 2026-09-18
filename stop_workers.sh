@@ -6,4 +6,6 @@ sleep 2
 pkill -9 -f "firefox" 2>/dev/null       # bắt cả firefox-bin
 pkill -9 -f "geckodriver" 2>/dev/null
 sleep 1
+# Dọn thư mục download tạm của các worker
+rm -rf "$HOME"/dl_w* 2>/dev/null
 echo "Đã dừng worker. Firefox còn lại: $(pgrep -c firefox 2>/dev/null || echo 0)"
