@@ -23,10 +23,27 @@ TARGET_TAB = "all"
 
 import os as _os
 
-# Đường dẫn Firefox/geckodriver — có thể ghi đè qua biến môi trường.
-# Mặc định theo bản snap Ubuntu desktop; server thường dùng /usr/local/bin, /usr/bin.
-GECKODRIVER = _os.environ.get("GECKODRIVER_PATH", "/snap/bin/geckodriver")
-FIREFOX_BIN = _os.environ.get("FIREFOX_BIN", "/snap/firefox/current/usr/lib/firefox/firefox")
+
+def _first_existing(paths, env_key):
+    """Trả đường dẫn đầu tiên tồn tại (ưu tiên biến môi trường)."""
+    env_val = _os.environ.get(env_key)
+    if env_val:
+        return env_val
+    for p in paths:
+        if _os.path.exists(p):
+            return p
+    return paths[0]  # fallback (Selenium sẽ tìm trong PATH nếu không tồn tại)
+
+
+# Đường dẫn Firefox/geckodriver — auto-detect, ghi đè được qua biến môi trường.
+GECKODRIVER = _first_existing(
+    ["/usr/local/bin/geckodriver", "/snap/bin/geckodriver", "/usr/bin/geckodriver"],
+    "GECKODRIVER_PATH",
+)
+FIREFOX_BIN = _first_existing(
+    ["/usr/bin/firefox", "/snap/firefox/current/usr/lib/firefox/firefox"],
+    "FIREFOX_BIN",
+)
 
 OUTPUT_ROOT = Path("data")
 DOWNLOAD_DIR = Path.home() / "Downloads"  # Firefox tải về đây (do site dùng blob)
