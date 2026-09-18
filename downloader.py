@@ -86,28 +86,46 @@ def download_tbmt(driver, dest: Path, logger) -> bool:
 
 
 def download_hsmt_webform(driver, dest: Path, logger) -> bool:
-    """Tải HSMT: click 'Tải tất cả biểu mẫu webform' -> tab viewer -> 'Tải về'."""
+    """Tải HSMT webform.
+
+    Nút 'Tải tất cả biểu mẫu webform' dùng window.open để mở trang viewer.
+    Trên server headless, window.open bị chặn -> tab không mở. Giải pháp: ghi đè
+    window.open để BẮT URL viewer, rồi tự điều hướng tới đó trong cùng tab,
+    chờ nút 'Tải về' và bấm.
+    """
     main = driver.current_window_handle
-    handles_before = set(driver.window_handles)
     cleanup_download_dir()  # dọn file rác trước khi tải
     before = _snapshot(C.DOWNLOAD_DIR)
+
+    # Ghi đè window.open để bắt URL viewer thay vì mở tab (tránh bị popup blocker chặn)
+    driver.execute_script(
+        "window.__openedUrl=null;"
+        "window.__origOpen=window.open;"
+        "window.open=function(u){window.__openedUrl=u; return null;};"
+    )
 
     if not click_span_fileattach(driver, "biểu mẫu webform"):
         logger.warning("    Không thấy nút 'Tải tất cả biểu mẫu webform'")
         return False
 
-    viewer = None
+    # Chờ URL viewer được sinh ra
+    viewer_url = None
     for _ in range(20):
         time.sleep(1)
-        new = set(driver.window_handles) - handles_before
-        if new:
-            viewer = new.pop()
+        viewer_url = driver.execute_script("return window.__openedUrl;")
+        if viewer_url:
             break
-    if not viewer:
-        logger.warning("    Viewer webform không mở")
+    if not viewer_url:
+        logger.warning("    Viewer webform không tạo URL")
         return False
 
-    driver.switch_to.window(viewer)
+    # Tự điều hướng tới viewer (cùng tab)
+    try:
+        driver.get(viewer_url)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"    Không mở được viewer: {str(e)[:60]}")
+        return False
+
     ok = False
     try:
         WebDriverWait(driver, C.VIEWER_RENDER_TIMEOUT).until(
