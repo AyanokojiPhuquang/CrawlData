@@ -12,20 +12,14 @@ from selenium.webdriver.common.by import By
 
 import config as C
 from browser import (
+    apply_advanced_date_filter,
     dismiss_alert,
     goto_with_retry,
+    select_result_tab,
     set_page_size,
 )
 from db import StateDB
 from utils import extract_notify_id, extract_notify_no
-
-
-def _select_tab_chua_dong_thau(driver) -> None:
-    for a in driver.find_elements(By.CSS_SELECTOR, "a[data-toggle='tab']"):
-        if "Chưa đóng thầu" in (a.text or ""):
-            driver.execute_script("arguments[0].click();", a)
-            break
-    time.sleep(C.PAGE_SETTLE)
 
 
 def _links_on_page(driver) -> list[tuple[str, str]]:
@@ -53,14 +47,32 @@ def _go_next_page(driver) -> bool:
 
 
 def discover(driver, db: StateDB, logger, target: int) -> int:
-    """Duyệt phân trang, lưu tối đa 'target' gói mới vào DB. Trả số gói mới thêm."""
+    """Duyệt phân trang, lưu tối đa 'target' gói mới vào DB. Trả số gói mới thêm.
+
+    Nếu cấu hình PUBLISH_DATE_FROM/TO thì lọc theo khoảng ngày đăng tải qua
+    tìm kiếm nâng cao, rồi cào tab TARGET_TAB. Ngược lại dùng tab 'Chưa đóng thầu'.
+    """
     logger.info(f"[DISCOVERY] Mục tiêu thu thập ~{target} gói")
-    if not goto_with_retry(driver, C.LIST_URL, logger):
-        logger.error("[DISCOVERY] Không mở được trang danh sách")
-        return 0
-    time.sleep(C.PAGE_SETTLE + 2)
-    dismiss_alert(driver)
-    _select_tab_chua_dong_thau(driver)
+
+    if C.PUBLISH_DATE_FROM and C.PUBLISH_DATE_TO:
+        logger.info(
+            f"[DISCOVERY] Lọc ngày đăng tải {C.PUBLISH_DATE_FROM} - {C.PUBLISH_DATE_TO}, "
+            f"tab '{C.TARGET_TAB}'"
+        )
+        if not apply_advanced_date_filter(
+            driver, C.PUBLISH_DATE_FROM, C.PUBLISH_DATE_TO, logger
+        ):
+            logger.error("[DISCOVERY] Áp dụng bộ lọc ngày thất bại")
+            return 0
+        select_result_tab(driver, C.TARGET_TAB)
+    else:
+        if not goto_with_retry(driver, C.LIST_URL, logger):
+            logger.error("[DISCOVERY] Không mở được trang danh sách")
+            return 0
+        time.sleep(C.PAGE_SETTLE + 2)
+        dismiss_alert(driver)
+        select_result_tab(driver, "open")
+
     set_page_size(driver, C.PAGE_SIZE)
 
     added_total = 0
@@ -68,7 +80,7 @@ def discover(driver, db: StateDB, logger, target: int) -> int:
     max_pages = 100000
     empty_streak = 0
 
-    while db.count_by_status().get("pending", 0) + added_total < target and page < max_pages:
+    while added_total < target and page < max_pages:
         links = _links_on_page(driver)
         added_this_page = 0
         for title, href in links:
@@ -93,8 +105,7 @@ def discover(driver, db: StateDB, logger, target: int) -> int:
             empty_streak = 0
 
         # đủ mục tiêu?
-        pending_now = db.count_by_status().get("pending", 0)
-        if pending_now >= target:
+        if added_total >= target:
             break
 
         prev_first = links[0][1] if links else None

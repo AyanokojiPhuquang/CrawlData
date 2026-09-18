@@ -176,6 +176,105 @@ def close_extra_tabs(driver, main_handle: str) -> None:
         pass
 
 
+def fill_ant_date(driver, picker_input, value: str) -> str:
+    """Điền 1 ô ngày Ant Design: click -> gõ vào .ant-calendar-input -> ENTER."""
+    from selenium.webdriver.common.keys import Keys
+
+    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", picker_input)
+    driver.execute_script("arguments[0].click();", picker_input)
+    time.sleep(1.5)
+    cals = [
+        c
+        for c in driver.find_elements(By.CSS_SELECTOR, ".ant-calendar-input")
+        if c.is_displayed()
+    ]
+    if not cals:
+        return ""
+    ci = cals[0]
+    try:
+        ci.clear()
+    except Exception:
+        pass
+    ci.send_keys(value)
+    time.sleep(1.0)
+    ci.send_keys(Keys.ENTER)
+    time.sleep(1.0)
+    return picker_input.get_attribute("value") or ""
+
+
+def apply_advanced_date_filter(driver, date_from: str, date_to: str, logger) -> bool:
+    """Mở trang tìm kiếm nâng cao, điền khoảng 'Thời gian đăng tải', bấm Tìm kiếm.
+
+    Trả True nếu submit thành công (trang chuyển sang danh sách kết quả).
+    """
+    if not goto_with_retry(driver, C.SEARCH_URL, logger):
+        logger.error("[FILTER] Không mở được trang tìm kiếm nâng cao")
+        return False
+    time.sleep(C.PAGE_SETTLE + 3)
+    dismiss_alert(driver)
+
+    def date_inputs():
+        return [
+            i
+            for i in driver.find_elements(By.XPATH, "//input[@placeholder='dd/mm/yyyy']")
+            if i.is_displayed()
+        ]
+
+    dins = date_inputs()
+    if len(dins) < 2:
+        logger.error(f"[FILTER] Không tìm thấy đủ ô ngày (thấy {len(dins)})")
+        return False
+
+    # 2 ô đầu = 'Thời gian đăng tải' (Từ / Đến)
+    v_from = fill_ant_date(driver, dins[0], date_from)
+    dins = date_inputs()  # refresh sau khi DOM đổi
+    v_to = fill_ant_date(driver, dins[1], date_to)
+    logger.info(f"[FILTER] Thời gian đăng tải: {v_from} -> {v_to}")
+    if v_from != date_from or v_to != date_to:
+        logger.warning("[FILTER] Giá trị ngày điền vào không khớp mong đợi")
+
+    # Bấm nút 'Tìm kiếm'
+    clicked = False
+    for b in driver.find_elements(
+        By.XPATH, "//button[contains(normalize-space(.),'Tìm kiếm')]"
+    ):
+        if b.is_displayed():
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", b)
+            driver.execute_script("arguments[0].click();", b)
+            clicked = True
+            break
+    if not clicked:
+        logger.error("[FILTER] Không thấy nút 'Tìm kiếm'")
+        return False
+
+    # Chờ danh sách kết quả xuất hiện
+    for _ in range(8):
+        time.sleep(5)
+        dismiss_alert(driver)
+        if driver.find_elements(By.CSS_SELECTOR, "a[href*='render=detail']"):
+            logger.info("[FILTER] Đã áp dụng bộ lọc, có kết quả")
+            return True
+    logger.warning("[FILTER] Submit xong nhưng chưa thấy kết quả")
+    return False
+
+
+def select_result_tab(driver, tab: str) -> None:
+    """Chọn tab kết quả: 'all' | 'open' | 'closed'."""
+    label = {
+        "all": "Tất cả",
+        "open": "Chưa đóng thầu",
+        "closed": "Đã đóng thầu",
+    }.get(tab, "Tất cả")
+    for a in driver.find_elements(By.CSS_SELECTOR, "a[data-toggle='tab'], ul.nav a"):
+        if label in (a.text or ""):
+            try:
+                driver.execute_script("arguments[0].click();", a)
+                time.sleep(C.PAGE_SETTLE)
+                return
+            except Exception:
+                continue
+
+
 def set_page_size(driver, size: int = C.PAGE_SIZE) -> bool:
     for sel in driver.find_elements(By.XPATH, "//select"):
         try:

@@ -57,6 +57,20 @@ sudo snap install firefox
 sudo snap install geckodriver     # hoặc tải từ trang mozilla/geckodriver
 ```
 
+## Lọc theo khoảng thời gian đăng tải
+
+Mặc định chương trình lọc gói thầu theo **Thời gian đăng tải** bằng tính năng
+"Tìm kiếm nâng cao" của trang. Cấu hình trong `config.py`:
+
+```python
+PUBLISH_DATE_FROM = "01/01/2026"   # dd/mm/yyyy; đặt None để không lọc
+PUBLISH_DATE_TO   = "31/01/2026"
+TARGET_TAB        = "all"          # 'all' | 'open' (chưa đóng) | 'closed' (đã đóng)
+```
+
+Ví dụ trên sẽ cào các gói đăng tải trong tháng 1/2026 (~7.000 gói), tab "Tất cả".
+Nếu đặt `PUBLISH_DATE_FROM = None`, chương trình quay lại chế độ cũ (tab "Chưa đóng thầu").
+
 ## Sử dụng
 
 ```bash

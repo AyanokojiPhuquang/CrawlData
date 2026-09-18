@@ -7,6 +7,19 @@ from pathlib import Path
 # --- Đường dẫn ---
 BASE_URL = "https://muasamcong.mpi.gov.vn"
 LIST_URL = f"{BASE_URL}/web/guest/contractor-selection?render=index"
+# Trang tìm kiếm nâng cao (để lọc theo khoảng ngày đăng tải)
+SEARCH_URL = (
+    f"{BASE_URL}/web/guest/contractor-selection"
+    "?p_p_id=egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2"
+    "&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view"
+    "&_egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2_render=search"
+)
+
+# --- Bộ lọc theo khoảng ngày đăng tải (dd/mm/yyyy). None = không lọc ---
+PUBLISH_DATE_FROM = "01/01/2026"
+PUBLISH_DATE_TO = "31/01/2026"
+# Tab cần cào sau khi lọc: 'all' | 'open' (chưa đóng) | 'closed' (đã đóng)
+TARGET_TAB = "all"
 
 GECKODRIVER = "/snap/bin/geckodriver"
 FIREFOX_BIN = "/snap/firefox/current/usr/lib/firefox/firefox"
